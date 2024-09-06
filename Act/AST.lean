@@ -16,7 +16,6 @@ inductive ValueType where
 | Primitive : AbiType -> ValueType
 deriving Repr, DecidableEq
 
-
 inductive SlotType where
 | Mapping : List ValueType -> ValueType -> SlotType
 | Value   : ValueType -> SlotType
@@ -25,7 +24,6 @@ deriving Repr, DecidableEq
 inductive StorageVar where
 | StorageVar : String -> SlotType -> StorageVar
 deriving Repr, DecidableEq
-
 
 def Store := AList (λ (_ : String) => AList (λ (_ : String) => SlotType × Nat))
 deriving DecidableEq
@@ -131,12 +129,10 @@ deriving Repr
 
 end
 
+-- Lean can't automatically derive DecidableEq for nested inductive types so we have to do it ourselves for now :(
+-- https://github.com/leanprover/lean4/issues/2329
+-- https://github.com/leanprover/lean4/pull/3160
 mutual
-
-instance (α : ActType) : DecidableEq (Exp α) := decExp
-instance : DecidableEq StorageRef := sorry
-instance : DecidableEq TypedExp := decTExp
-instance (α : ActType) : DecidableEq (StorageItem α) := sorry
 
 def decExp (a b : Exp t) : Decidable (a = b) :=
   match a, b with
@@ -149,6 +145,13 @@ def decExp (a b : Exp t) : Decidable (a = b) :=
     | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
     | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
   | _, _ => isFalse (by sorry)
+
+def decStorageItem (a b : StorageItem t) : Decidable (a = b) :=
+  match a, b with
+  | .Item _ la lb, .Item _ ra rb => match instDecidableEqValueType la ra, decStorageRef lb rb with
+    | isTrue ha, isTrue hb => isTrue (by rw [ha, hb])
+    | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
+    | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
 
 def decTExp (a b : TypedExp) : Decidable (a = b) :=
   match a, b with
@@ -184,13 +187,40 @@ def decStorageRef (a b : StorageRef) : Decidable (a = b) :=
     | isTrue hl, isTrue hr => isTrue (by rw [hl, hr])
     | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
     | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-  | .Mapping la lb, .Mapping ra rb => match decStorageRef la ra, instDecidableEqList lb rb with
+  | .Mapping la lb, .Mapping ra rb => match decStorageRef la ra, decListTExp lb rb with
     | isTrue hl, isTrue hr => isTrue (by rw [hl, hr])
     | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
     | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-  | _, _ => isFalse (by sorry)
+  | .Field la lb lc, .Field ra rb rc => match decStorageRef la ra, instDecidableEqString lb rb, instDecidableEqString lc rc with
+    | isTrue ha, isTrue hb, isTrue hc => isTrue (by rw [ha, hb, hc])
+    | isFalse _, _, _ => isFalse (by intro h; injection h; contradiction)
+    | _, isFalse _, _ => isFalse (by intro h; injection h; contradiction)
+    | _, _, isFalse _ => isFalse (by intro h; injection h; contradiction)
+  | .Var _ _, .Mapping _ _ => isFalse (by intro h; injection h)
+  | .Var _ _, .Field _ _ _ => isFalse (by intro h; injection h)
+  | .Mapping _ _, .Var _ _ => isFalse (by intro h; injection h)
+  | .Mapping _ _, .Field _ _ _ => isFalse (by intro h; injection h)
+  | .Field _ _ _, .Var _ _ => isFalse (by intro h; injection h)
+  | .Field _ _ _, .Mapping _ _ => isFalse (by intro h; injection h)
+
+def decListTExp (a b : List TypedExp) : Decidable (a = b) :=
+  match a, b with
+  | [], [] => isTrue rfl
+  | _::_, [] => isFalse (by intro; contradiction)
+  | [], _::_ => isFalse (by intro; contradiction)
+  | a::as, b::bs =>
+    match decTExp a b with
+    | isTrue h₁ => match decListTExp as bs with
+      | isTrue h₂ => isTrue (by rw [h₁, h₂])
+      | isFalse _ => isFalse (by intro h; injection h; contradiction)
+    | isFalse _ => isFalse (by intro h; injection h; contradiction)
 
 end
+
+instance (α : ActType) : DecidableEq (Exp α) := decExp
+instance : DecidableEq StorageRef := decStorageRef
+instance : DecidableEq TypedExp := decTExp
+instance (α : ActType) : DecidableEq (StorageItem α) := decStorageItem
 
 inductive StorageUpdate where
 | Update : StorageItem ty → Exp ty → StorageUpdate
