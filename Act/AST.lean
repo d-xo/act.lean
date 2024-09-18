@@ -29,12 +29,10 @@ def Store := AList (λ (_ : String) => AList (λ (_ : String) => SlotType × Nat
 deriving DecidableEq
 
 instance : Repr Store where
-  reprPrec s n :=
-    let ks := s.keys
-    sorry
+  reprPrec s n := reprPrec (s.entries.map (λ v => (v.fst, v.snd.entries))) n
 
 instance : Repr ByteArray where
-  reprPrec b n := sorry
+  reprPrec b n := reprPrec b.data n
 
 inductive ActType where
 | Bool
@@ -64,6 +62,9 @@ inductive EthEnv : ActType → Type where
 | Nonce : EthEnv .Int
 deriving Repr, DecidableEq
 
+-- Lean can't automatically derive DecidableEq for nested inductive types yes:
+--  - https://github.com/leanprover/lean4/issues/2329
+--  - https://github.com/leanprover/lean4/pull/3160
 mutual
 
 inductive Exp : ActType → Type where
@@ -76,7 +77,7 @@ inductive Exp : ActType → Type where
 | LEQ : Exp .Bool → Exp .Bool → Exp .Bool
 | GEQ : Exp .Bool → Exp .Bool → Exp .Bool
 | GT : Exp .Bool → Exp .Bool → Exp .Bool
-| LitBool : Exp .Bool → Exp .Bool → Exp .Bool
+| LitBool : Bool → Exp .Bool
 
 -- integers
 | Add : Exp .Int → Exp .Int → Exp .Int
@@ -104,12 +105,10 @@ inductive Exp : ActType → Type where
 
 -- polymorphic
 | Eq : Exp t → Exp t → Exp .Bool
-| Env : EthEnv t → Exp t
+| Env : ∀ {t}, EthEnv t → Exp t
 | NEq : Exp t → Exp t → Exp .Bool
 | ITE : Exp .Bool → Exp t → Exp t → Exp t
 | Var : (t : ActType) → AbiType → String → Exp t
-
--- storage
 | Entry : When → StorageItem t → Exp t
 deriving Repr
 
@@ -119,7 +118,7 @@ deriving Repr
 
 inductive StorageRef where
 | Var : String → String → StorageRef
-| Mapping : StorageRef → List (TypedExp) → StorageRef
+| Mapping : StorageRef → List TypedExp → StorageRef
 | Field : StorageRef → String → String → StorageRef
 deriving Repr
 
@@ -129,112 +128,19 @@ deriving Repr
 
 end
 
--- Lean can't automatically derive DecidableEq for nested inductive types so we have to do it ourselves for now :(
--- https://github.com/leanprover/lean4/issues/2329
--- https://github.com/leanprover/lean4/pull/3160
-mutual
-
-def decExp (a b : Exp t) : Decidable (a = b) :=
-  match a, b with
-  | .And la ra, .And lb rb => match decExp la lb, decExp ra rb with
-    | isTrue hl, isTrue hr => isTrue (by rw [hl, hr])
-    | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
-    | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-  | .Or la ra, .Or lb rb => match decExp la lb, decExp ra rb with
-    | isTrue hl, isTrue hr => isTrue (by rw [hl, hr])
-    | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
-    | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-  | _, _ => isFalse (by sorry)
-
-def decStorageItem (a b : StorageItem t) : Decidable (a = b) :=
-  match a, b with
-  | .Item _ la lb, .Item _ ra rb => match instDecidableEqValueType la ra, decStorageRef lb rb with
-    | isTrue ha, isTrue hb => isTrue (by rw [ha, hb])
-    | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
-    | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-
-def decTExp (a b : TypedExp) : Decidable (a = b) :=
-  match a, b with
-  | @TypedExp.TExp tl l, @TypedExp.TExp tr r => match tl, tr with
-    | .Int, .Int => match decExp l r with
-      | isTrue h => isTrue (by rw [h])
-      | isFalse h => isFalse (by intro h; injection h; contradiction)
-    | .Bool, .Bool => match decExp l r with
-      | isTrue h => isTrue (by rw [h])
-      | isFalse h => isFalse (by intro h; injection h; contradiction)
-    | .ByteStr, .ByteStr => match decExp l r with
-      | isTrue h => isTrue (by rw [h])
-      | isFalse h => isFalse (by intro h; injection h; contradiction)
-    | .Contract, .Contract => match decExp l r with
-      | isTrue h => isTrue (by rw [h])
-      | isFalse h => isFalse (by intro h; injection h; contradiction)
-    | .Int, .ByteStr => isFalse (by intro h; injection h; contradiction)
-    | .Int, .Bool => isFalse (by intro h; injection h; contradiction)
-    | .Int, .Contract => isFalse (by intro h; injection h; contradiction)
-    | .Bool, .Int => isFalse (by intro h; injection h; contradiction)
-    | .Bool, .ByteStr => isFalse (by intro h; injection h; contradiction)
-    | .Bool, .Contract => isFalse (by intro h; injection h; contradiction)
-    | .ByteStr, .Int => isFalse (by intro h; injection h; contradiction)
-    | .ByteStr, .Bool => isFalse (by intro h; injection h; contradiction)
-    | .ByteStr, .Contract => isFalse (by intro h; injection h; contradiction)
-    | .Contract, .Int => isFalse (by intro h; injection h; contradiction)
-    | .Contract, .Bool => isFalse (by intro h; injection h; contradiction)
-    | .Contract, .ByteStr => isFalse (by intro h; injection h; contradiction)
-
-def decStorageRef (a b : StorageRef) : Decidable (a = b) :=
-  match a, b with
-  | .Var la lb, .Var ra rb => match instDecidableEqString la ra, instDecidableEqString lb rb with
-    | isTrue hl, isTrue hr => isTrue (by rw [hl, hr])
-    | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
-    | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-  | .Mapping la lb, .Mapping ra rb => match decStorageRef la ra, decListTExp lb rb with
-    | isTrue hl, isTrue hr => isTrue (by rw [hl, hr])
-    | isFalse _, _ => isFalse (by intro h; injection h; contradiction)
-    | _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-  | .Field la lb lc, .Field ra rb rc => match decStorageRef la ra, instDecidableEqString lb rb, instDecidableEqString lc rc with
-    | isTrue ha, isTrue hb, isTrue hc => isTrue (by rw [ha, hb, hc])
-    | isFalse _, _, _ => isFalse (by intro h; injection h; contradiction)
-    | _, isFalse _, _ => isFalse (by intro h; injection h; contradiction)
-    | _, _, isFalse _ => isFalse (by intro h; injection h; contradiction)
-  | .Var _ _, .Mapping _ _ => isFalse (by intro h; injection h)
-  | .Var _ _, .Field _ _ _ => isFalse (by intro h; injection h)
-  | .Mapping _ _, .Var _ _ => isFalse (by intro h; injection h)
-  | .Mapping _ _, .Field _ _ _ => isFalse (by intro h; injection h)
-  | .Field _ _ _, .Var _ _ => isFalse (by intro h; injection h)
-  | .Field _ _ _, .Mapping _ _ => isFalse (by intro h; injection h)
-
-def decListTExp (a b : List TypedExp) : Decidable (a = b) :=
-  match a, b with
-  | [], [] => isTrue rfl
-  | _::_, [] => isFalse (by intro; contradiction)
-  | [], _::_ => isFalse (by intro; contradiction)
-  | a::as, b::bs =>
-    match decTExp a b with
-    | isTrue h₁ => match decListTExp as bs with
-      | isTrue h₂ => isTrue (by rw [h₁, h₂])
-      | isFalse _ => isFalse (by intro h; injection h; contradiction)
-    | isFalse _ => isFalse (by intro h; injection h; contradiction)
-
-end
-
-instance (α : ActType) : DecidableEq (Exp α) := decExp
-instance : DecidableEq StorageRef := decStorageRef
-instance : DecidableEq TypedExp := decTExp
-instance (α : ActType) : DecidableEq (StorageItem α) := decStorageItem
-
 inductive StorageUpdate where
 | Update : StorageItem ty → Exp ty → StorageUpdate
-deriving Repr, DecidableEq
+deriving Repr
 
 structure Decl where
   type : AbiType
   name : String
-deriving Repr, DecidableEq
+deriving Repr
 
 structure Interface where
   name : String
   decls : List Decl
-deriving Repr, DecidableEq
+deriving Repr
 
 structure Constructor where
   name           : String
@@ -242,7 +148,7 @@ structure Constructor where
   preconditions  : List (Exp .Bool)
   postconditions : List (Exp .Bool)
   initStorage    : List StorageUpdate
-deriving Repr, DecidableEq
+deriving Repr
 
 structure Behaviour where
   name           : String
@@ -252,22 +158,22 @@ structure Behaviour where
   postconditions : List (Exp .Bool)
   storageUpdates : List StorageUpdate
   initStorage    : List StorageUpdate
-deriving Repr, DecidableEq
+deriving Repr
 
 structure Invariant where
   contract : String
   preconditions : List (Exp .Bool)
   storageBounds : List (Exp .Bool)
   predicate : Exp .Bool × Exp .Bool
-deriving Repr, DecidableEq
+deriving Repr
 
 structure Contract where
   constructor : Constructor
   behaviours : List Behaviour
   invariants : List Invariant
-deriving Repr, DecidableEq
+deriving Repr
 
 structure Act where
   store : Store
   contracts : List Contract
-deriving Repr, DecidableEq
+deriving Repr
