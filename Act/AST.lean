@@ -3,6 +3,8 @@ import Mathlib.Tactic
 import Mathlib.Data.List.AList
 import Init.Data.ByteArray
 
+namespace Act
+
 -- AST definitions for Act
 
 inductive AbiType where
@@ -152,12 +154,12 @@ deriving Repr
 
 structure Behaviour where
   name           : String
-  interface     : Interface
+  interface      : Interface
   preconditions  : List (Exp .Bool)
   caseconditions : List (Exp .Bool)
   postconditions : List (Exp .Bool)
   storageUpdates : List StorageUpdate
-  initStorage    : List StorageUpdate
+  returns        : Option TypedExp
 deriving Repr
 
 structure Invariant where
@@ -173,7 +175,9 @@ structure Contract where
   invariants : List Invariant
 deriving Repr
 
-structure Act where
+structure Spec where
   store : Store
   contracts : List Contract
 deriving Repr
+
+end Act
