@@ -11,16 +11,14 @@ import Act.AST
 
 namespace Act
 
-inductive Val where
-| Int : Int → Val
-| ByteStr : ByteArray → Val
-| Bool : Bool → Val
-deriving BEq
+-- Get the representation type for an Act AST type --
 
 class Rep (α : Type) where
   rep : α → Type
 
 open Rep
+
+-- Basic Rep instances --
 
 @[simp]
 instance : Rep ActType where
@@ -30,11 +28,21 @@ instance : Rep ActType where
   | .Bool => Bool
   | .Contract => sorry
 
+instance : Rep TypedExp where
+  rep a := match a with
+    | @TypedExp.TExp t _ => Rep.rep t
+
+-- Type erased wrapper for values --
+
+def Val := Σ t : ActType, rep t
+
 def cast : (a : ActType) → Val → Option (rep a)
-| .Int, .Int v => some v
-| .ByteStr, .ByteStr v => some v
-| .Bool, .Bool v => some v
+| .Int, ⟨.Int, v⟩ => some v
+| .ByteStr, ⟨.ByteStr, v⟩ => some v
+| .Bool, ⟨.Bool, v⟩ => some v
 | _, _ => none
+
+-- Storage Definition --
 
 inductive LocType where
 | Mapping : List ActType -> ActType → LocType
@@ -47,25 +55,18 @@ instance : Rep LocType where
   | .Value ty => rep ty
   | .Mapping args ret => (Π (idx : Fin args.length), Rep.rep (args.get idx)) → (rep ret)
 
-def extractTy : TypedExp → ActType
-| @TypedExp.TExp t _ => t
-
-def locTy (rt : ActType) : StorageRef → LocType
-| .Var _ _ => .Value rt
-| .Mapping r args => .Mapping (args.map extractTy) rt
-| .Field _ _ _ => sorry
-
-inductive StorageVal : Type where
-| Val : (ty : LocType) → rep ty → StorageVal
+def StorageVal := Σ t : LocType, rep t
 
 abbrev Storage := String → String → Option StorageVal
 
+-- Evaluation State --
+
 structure State where
-  env : ∀ t, EthEnv t → Val
+  env : AList (λ (_ : EthEnv t) => rep t)
   vars : String → Option Val
   store : Storage
 
-namespace ind
+-- Evaluation Relations --
 
 inductive Eval : State → Exp a → rep a → Type where
 | And
@@ -84,10 +85,6 @@ inductive Eval : State → Exp a → rep a → Type where
   : s.vars nm = some val
   → cast ty val = some ret
   → Eval s (.Var ty abi  nm) ret
-
-instance : Rep TypedExp where
-  rep a := match a with
-    | @TypedExp.TExp t _ => Rep.rep t
 
 inductive EvalTExp : State → (e : TypedExp) → rep e → Type where
 | TExp : ∀ ty e (rty : rep ty), Eval s e rty → EvalTExp s (@TypedExp.TExp ty e) rty
@@ -111,10 +108,7 @@ inductive Updates : State → State → List StorageUpdate → State → Type wh
   → Updates pre post ((.Update (.Item ta tv (.Var c nm)) e) :: tl)
     ⟨ pre.env
     , pre.vars
-    , λ c' nm' =>
-      if c = c' && nm = nm'
-      then some (.Val (locTy ta (.Var c nm)) v)
-      else post.store c' nm'
+    , λ c' nm' => sorry
     ⟩
 -- TODO: handle n-d maps
 | Mapping1
@@ -125,17 +119,7 @@ inductive Updates : State → State → List StorageUpdate → State → Type wh
   → Updates pre post ((.Update (.Item ta tv (.Mapping (.Var c nm) args)) e) :: tl)
     ⟨ pre.env
     , pre.vars
-    , λ c' nm' =>
-      if c = c' && nm = nm'
-      -- TODO: gotta build a function with the same number of
-      then some (.Val (locTy ta (.Mapping (.Var c nm) args)) (λ as =>
-        have len_thm : args.length  = (List.map extractTy args).length := by sorry
-        have arg_thm : ∀ i, rep ((List.map extractTy args).get (len_thm ▸ i)) = rep (args.get i) := by sorry
-        Fin.foldl args.length (λ (a : Bool) i =>
-          a && (eargs i == (arg_thm i ▸ as (len_thm ▸ i)))
-        ) True
-      ))
-      else post.store c' nm'
+    , λ c' nm' => sorry
     ⟩
 
 inductive Update : State → List StorageUpdate → State → Type where
@@ -145,7 +129,7 @@ inductive EvalRet : State → Option TypedExp → Option (Σ a : ActType, rep a)
 | None : EvalRet s .none .none
 | Some
   : ∀ (exp : Exp t)
-  , EvalTExp s (.TExp exp) ⟨t, v⟩
+  , EvalTExp s (.TExp exp) v
   → EvalRet s (.some (@TypedExp.TExp t exp)) (some ⟨t, v⟩)
 
 inductive Step : Behaviour → State → State → Option (Σ a : ActType, rep a) → Type where
@@ -156,57 +140,5 @@ inductive Step : Behaviour → State → State → Option (Σ a : ActType, rep a
    → Update pre behv.storageUpdates post
    → EvalRet pre behv.returns ret
    → Step behv pre post ret
-
-end ind
-
-namespace int
-
-def eval (s : State) : Exp a → Option Val
-| .And l r => match eval s l, eval s r with
-  | .some (.Bool l'), .some (.Bool r') => .some (.Bool (l' && r'))
-  | _, _ => .none
-
-| .Add l r => match eval s l, eval s r with
-  | .some (.Int l'), .some (.Int r') => .some (.Int (l' + r'))
-  | _, _ => .none
-
-| .Cat l r => match eval s l, eval s r with
-  | .some (.ByteStr l'), .some (.ByteStr r') => .some (.ByteStr (l' ++ r'))
-  | _, _ => .none
-
-| .Eq l r => match eval s l, eval s r with
-  | .some (.Int l'), .some (.Int r') => .some (.Bool (l' == r'))
-  | .some (.ByteStr l'), .some (.ByteStr r') => .some (.Bool (l' == r'))
-  | .some (.Bool l'), .some (.Bool r') => .some (.Bool (l' == r'))
-  | _, _ => .some (.Bool false)
-
-| _ => .none
-
-
-def step (behv : Behaviour) (state : State) : Option (State × Option Val) := do
-  let cond ← do
-    let vs ← sequence $ List.map (eval state) (behv.preconditions ++ behv.caseconditions)
-    let bs ← sequence $ vs.map (λ v => match v with
-      | .Bool b => some b
-      | _ => none)
-    pure $ bs.all id
-
-  let ret := match behv.returns with
-    | .some (.TExp e) => eval state e
-    | .none => .none
-
-  let store' :=
-      if not cond
-      then state.store
-      else behv.storageUpdates.foldl (λ store upd => match upd with
-        | .Update (.Item t _ ref) exp => match eval state exp with
-          | .none => store
-          | .some v => λ r => if r == ref then v else store r
-      ) state.store
-
-  pure ⟨⟨ state.env, state.vars, store' ⟩, ret⟩
-
-end int
-
 
 end Act
